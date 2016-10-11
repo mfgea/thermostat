@@ -2,19 +2,42 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+#define DEBUG true
+#define SCREENSAVER 0
+#define CAYENNE 1
+
+#define temperatureLowerLimit 10
+#define temperatureHigherLimit 30
+
+#define OLED_I2C_ADDRESS 0x3C
+#define TEMP_SENSOR 4
+#define ROTARY_A 2
+#define ROTARY_B 3
+#define SWITCH 8
+
+
 #if defined(ESP8266)
   #include "credentials.h"
 
-  //#include <ESP8266WiFi.h>
-  //#include <WiFiClient.h>
-  #include <ESP8266WebServer.h>
+  #if CAYENNE
+    #define TEMPERATURE_VPIN V0
+    #define DESIRED_TEMPERATURE_VPIN V1
+    #define SWITCH_VPIN V2
+  
+    #if DEBUG
+      #define CAYENNE_DEBUG         // Uncomment to show debug messages
+      #define CAYENNE_PRINT Serial  // Comment this out to disable prints and save space
+    #endif
+    //#include <CayenneWiFi.h>
+    #include <CayenneDefines.h>
+    #include <BlynkSimpleEsp8266.h>
+    #include <CayenneWiFiClient.h>
+  #else
+    #include <ESP8266WiFi.h>
+    #include <WiFiClient.h>
+  #endif
 
-  //#define CAYENNE_DEBUG         // Uncomment to show debug messages
-  #define CAYENNE_PRINT Serial  // Comment this out to disable prints and save space
-  //#include <CayenneWiFi.h>
-  #include <CayenneDefines.h>
-  #include <BlynkSimpleEsp8266.h>
-  #include <CayenneWiFiClient.h>
+  #include <ESP8266WebServer.h>
 #endif
 
 #include <rotary.h>
@@ -27,7 +50,15 @@
 #include "glyphs.h"
 #include "screensaver_toasters_bitmaps.h" // Toaster graphics data is in this header file
 
-#define DEBUG true
+#if DEBUG
+  #define debugln(a) (Serial.println(a))
+  #define debug(a) (Serial.print(a))
+  #define debugBegin(a) (Serial.begin(a))
+#else
+  #define debugln(a)
+  #define debug(a)
+  #define debugBegin(a)
+#endif
 
 #define N_FLYERS   5 // Number of flying things
 struct Flyer {       // Array of flying things
@@ -36,21 +67,19 @@ struct Flyer {       // Array of flying things
   uint8_t frame;     // Animation frame; Toasters cycle 0-3, Toast=255
 } flyer[N_FLYERS];
 
-#define OLED_I2C_ADDRESS 0x3C
-#define TEMP_SENSOR 4
-#define ROTARY_A 2
-#define ROTARY_B 3
-#define SWITCH 8
-
 #define UNUSED_PIN -1
 
-#define ON true
-#define OFF false
+#define ON 1
+#define OFF 0
 
 #if defined(ESP8266)
   char token[] = CAYENNE_TOKEN;
   char ssid[] = WIFI_SSID;
   char password[] = WIFI_PASSWORD;
+
+  #if !CAYENNE
+  WiFiEventHandler gotIpEventHandler, disconnectedEventHandler, connectedEventHandler;
+  #endif
 
   ESP8266WebServer server(80);
 #endif
@@ -67,9 +96,6 @@ uint8_t enableServer = false;
 float temperature = 0;
 float desiredTemperature = 21.0;
 
-#define temperatureLowerLimit 10
-#define temperatureHigherLimit 30
-
 OneWire oneWirePin(TEMP_SENSOR);
 DallasTemperature sensors(&oneWirePin);
 
@@ -81,16 +107,8 @@ DallasTemperature sensors(&oneWirePin);
   }
 #endif
 
-void debug(String str){
-#if DEBUG
-  Serial.println(str);
-#endif
-}
-
 void setup()   {
- #if DEBUG
-  Serial.begin(9600);
- #endif
+  debugBegin(74880);
 
   #if defined(ESP8266)
     attachInterrupt(digitalPinToInterrupt(ROTARY_A), rotaryChanged, CHANGE);
@@ -114,7 +132,7 @@ void setup()   {
 #endif
 
   // init done
-  debug("\ninit");
+  debugln("\ninit");
 
   // Show image buffer on the display hardware.
   // Since the buffer is intialized with an Adafruit splashscreen
@@ -132,50 +150,76 @@ void setup()   {
 }
 
 #if defined(ESP8266)
-/*
-void WiFiEvent(WiFiEvent_t event) {
-    switch(event) {
-        case WIFI_EVENT_STAMODE_GOT_IP:
-            debug("WiFi connected");
-            debug("IP address: ");
-            debug((String)WiFi.localIP());
-            enableServer = true;
-            break;
-        case WIFI_EVENT_STAMODE_DISCONNECTED:
-            debug("WiFi lost connection");
-            enableServer = false;
-            break;
-    }
-}
-*/
+
 void setupWebServer() {
-  //WiFi.disconnect(true);
-
-  //delay(1000);
-
+  debugln("Using credentials:");
+  debug("Cayenne token: ");
+  debugln(token);
+  debug("Wifi SSID: ");
+  debugln(ssid);
+  debug("Wifi Password: ");
+  debugln(password);
+  debug("Cayenne?: ");
+  debugln(CAYENNE);
+  #if CAYENNE
   Cayenne.begin(token, ssid, password);
+  #else
+  debugln("Disconnecting...");
+  WiFi.disconnect(true);
 
-  //WiFi.onEvent(WiFiEvent);
-  //WiFi.begin(ssid, password);
+  delay(1000);
+  debugln("OK. Reconnecting...");
 
-  server.on ( "/", sendStatus);
-  server.on ( "/set", setData);
+  connectedEventHandler = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& event) {
+    debugln("Station connected");
+  });
+
+  disconnectedEventHandler = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event) {
+    debugln("Station disconnected");
+    enableServer = false;
+  });
+
+  gotIpEventHandler = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& event) {
+    debug("Wifi connected, IP: ");
+    debugln(WiFi.localIP());
+    enableServer = true;
+  });
+  
+  WiFi.begin(ssid, password);
+  #endif
+
+  server.on("/", sendStatus);
+  server.on("/set", setData);
   server.begin();
 }
 
 void sendStatus() {
   char tmp[400];
 
-  snprintf(tmp, 400, "{ \"temperature\": \"%f\", \"desiredTemperature\": \"%f\", \"switchState\": \"%d\" }", getTemperature(), desiredTemperature, switchState);
+  debugln("sending status...");
+
+  char temp[10];
+  ftoa(temp, getTemperature(), 2);
+  
+  char desiredTemp[10];
+  ftoa(desiredTemp, desiredTemperature, 2);
+
+  snprintf(tmp, 400, "{ \"temperature\": \"%s\", \"desiredTemperature\": \"%s\", \"switchState\": \"%d\" }", temp, desiredTemp, switchState);
+  debugln(tmp);
   server.send(200, "  application/json", tmp);
 }
 
 void setData() {
+  debugln("setting vars...");
   if(server.arg("desiredTemperature")) {
+    debug("setting desiredTemp: ");
     desiredTemperature = server.arg("desiredTemperature").toFloat();
+    debugln(desiredTemperature);
   }
   if(server.arg("switchState")) {
+    debug("setting switchStatus: ");
     switchState = server.arg("switchState").toInt();
+    debugln(switchState);
   }
   sendStatus();
 }
@@ -194,7 +238,7 @@ void loop() {
   display.display();
   display.clearDisplay(); // start new buffer
 
-  if(screensaverOn) {
+  if(SCREENSAVER && screensaverOn) {
     screensaverRender();
   } else {
     renderUI();
@@ -203,6 +247,10 @@ void loop() {
       turnScreensaver(ON);
     }
   }
+
+  #if CAYENNE
+  Cayenne.run();
+  #endif
 }
 
 void draw_temp(float temp, int tempInt, int tempDec) {
@@ -284,6 +332,10 @@ void draw_desired_temp(float temp) {
     display.print(str);
 }
 
+void drawWifiIcon() {
+  // render a wifi icon, either connected or not
+}
+
 void renderUI() {
   // text display tests
   display.setTextColor(WHITE);
@@ -293,6 +345,10 @@ void renderUI() {
   draw_temp(temp, tempInt, tempDec);
 
   draw_desired_temp(desiredTemperature);
+
+  #if defined(ESP8266)
+  drawWifiIcon();
+  #endif
 }
 
 float getTemperature() {
@@ -339,6 +395,20 @@ void rotaryChanged() {
   }
 }
 
+#if CAYENNE
+CAYENNE_OUT(TEMPERATURE_VPIN) {
+  Cayenne.celsiusWrite(TEMPERATURE_VPIN, getTemperature());
+}
+
+CAYENNE_OUT(DESIRED_TEMPERATURE_VPIN) {
+  Cayenne.celsiusWrite(DESIRED_TEMPERATURE_VPIN, desiredTemperature);
+}
+
+CAYENNE_OUT(SWITCH_VPIN) {
+  Cayenne.virtualWrite(SWITCH_VPIN, switchState);
+}
+#endif
+
 #if !defined(ESP8266)
   ISR(PCINT0_vect){
     switchPressed();
@@ -347,6 +417,21 @@ void rotaryChanged() {
     rotaryChanged();
   }
 #endif
+
+char* ftoa(char *a, double f, int precision) {
+  char *ret = a;
+  long integer = (long)f;
+  itoa(integer, a, 10);
+  while (*a != '\0') a++;
+  *a++ = '.';
+  int mult = 10 ^ precision;
+  if (precision == 0){
+    mult = 0;
+  }
+  long decimal = abs((long)((f - integer) * mult));
+  itoa(decimal, a, 10);
+  return ret;
+}
 
 /* -------------------- */
 
@@ -372,8 +457,13 @@ void screensaverRender() {
     f = (flyer[i].frame == 255) ? 4 : (flyer[i].frame++ & 3); // Frame #
     x = flyer[i].x / 16;
     y = flyer[i].y / 16;
+    #if defined(ESP8266)
+    display.drawBitmap(x, y, (const uint8_t *)pgm_read_dword(&mask[f]), 32, 32, BLACK);
+    display.drawBitmap(x, y, (const uint8_t *)pgm_read_dword(&img[f]), 32, 32, WHITE);
+    #else
     display.drawBitmap(x, y, (const uint8_t *)pgm_read_word(&mask[f]), 32, 32, BLACK);
-    display.drawBitmap(x, y, (const uint8_t *)pgm_read_word(&img[ f]), 32, 32, WHITE);
+    display.drawBitmap(x, y, (const uint8_t *)pgm_read_word(&img[f]), 32, 32, WHITE);
+    #endif
 
     // Then update position, checking if item moved off screen...
     flyer[i].x -= flyer[i].depth * 2; // Update position based on depth,

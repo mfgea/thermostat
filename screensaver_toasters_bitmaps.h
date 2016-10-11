@@ -143,4 +143,3 @@ const uint8_t * const mask[] PROGMEM = {
 const uint8_t * const img[]  PROGMEM = {
   toaster0    , toaster1    , toaster2    , toaster1    , toast     };
 
-

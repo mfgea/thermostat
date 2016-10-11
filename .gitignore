@@ -29,4 +29,10 @@
 *.out
 *.app
 
+######################
+
+# Credentials
 credentials.h
+
+# Backup Files
+*.bak
