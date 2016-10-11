@@ -3,6 +3,8 @@
 #include <DallasTemperature.h>
 
 #if defined(ESP8266)
+  #include "credentials.h"
+
   //#include <ESP8266WiFi.h>
   //#include <WiFiClient.h>
   #include <ESP8266WebServer.h>
@@ -46,11 +48,9 @@ struct Flyer {       // Array of flying things
 #define OFF false
 
 #if defined(ESP8266)
-  // Cayenne authentication token. This should be obtained from the Cayenne Dashboard.
-  char token[] = "abcdefg";
-  // Your network name and password.
-  char ssid[] = "NetworkSSID";
-  char password[] = "NetwordPassword";
+  char token[] = CAYENNE_TOKEN;
+  char ssid[] = WIFI_SSID;
+  char password[] = WIFI_PASSWORD;
 
   ESP8266WebServer server(80);
 #endif
