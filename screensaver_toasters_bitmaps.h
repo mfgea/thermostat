@@ -1,4 +1,3 @@
-#include <Arduino.h>
 
 const uint8_t PROGMEM
  toastermask0[] = {

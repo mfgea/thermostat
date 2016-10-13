@@ -48,6 +48,7 @@
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 #include "glyphs.h"
+#include "wifi_icons.h"
 #include "screensaver_toasters_bitmaps.h" // Toaster graphics data is in this header file
 
 #if DEBUG
@@ -77,9 +78,7 @@ struct Flyer {       // Array of flying things
   char ssid[] = WIFI_SSID;
   char password[] = WIFI_PASSWORD;
 
-  #if !CAYENNE
   WiFiEventHandler gotIpEventHandler, disconnectedEventHandler, connectedEventHandler;
-  #endif
 
   ESP8266WebServer server(80);
 #endif
@@ -96,6 +95,8 @@ uint8_t enableServer = false;
 float temperature = 0;
 float desiredTemperature = 21.0;
 
+bool updateDisplay = true;
+
 OneWire oneWirePin(TEMP_SENSOR);
 DallasTemperature sensors(&oneWirePin);
 
@@ -109,6 +110,7 @@ DallasTemperature sensors(&oneWirePin);
 
 void setup()   {
   debugBegin(74880);
+  debugln("\ninit");
 
   #if defined(ESP8266)
     attachInterrupt(digitalPinToInterrupt(ROTARY_A), rotaryChanged, CHANGE);
@@ -126,14 +128,6 @@ void setup()   {
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS);  // initialize with the I2C addr 0x3D (for the 128x64)
 
-  screensaverSetup();
-#if OWSENSOR
-  sensors.begin();
-#endif
-
-  // init done
-  debugln("\ninit");
-
   // Show image buffer on the display hardware.
   // Since the buffer is intialized with an Adafruit splashscreen
   // internally, this will display the splashscreen.
@@ -142,33 +136,28 @@ void setup()   {
   display.display();
   delay(200);
 
+  screensaverSetup();
+#if OWSENSOR
+  sensors.begin();
+#endif
+
   idleStartTime = millis();
 
 #if defined(ESP8266)
   setupWebServer();
 #endif
+
+  randomSeed(analogRead(0));
 }
 
 #if defined(ESP8266)
 
 void setupWebServer() {
   debugln("Using credentials:");
-  debug("Cayenne token: ");
-  debugln(token);
-  debug("Wifi SSID: ");
-  debugln(ssid);
-  debug("Wifi Password: ");
-  debugln(password);
-  debug("Cayenne?: ");
-  debugln(CAYENNE);
-  #if CAYENNE
-  Cayenne.begin(token, ssid, password);
-  #else
-  debugln("Disconnecting...");
-  WiFi.disconnect(true);
-
-  delay(1000);
-  debugln("OK. Reconnecting...");
+  debug("Cayenne token: "); debugln(token);
+  debug("Wifi SSID: "); debugln(ssid);
+  debug("Wifi Password: "); debugln(password);
+  debug("Cayenne?: "); debugln(CAYENNE);
 
   connectedEventHandler = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& event) {
     debugln("Station connected");
@@ -185,6 +174,15 @@ void setupWebServer() {
     enableServer = true;
   });
   
+  #if CAYENNE
+  Cayenne.begin(token, ssid, password);
+  #else
+  debugln("Disconnecting...");
+  WiFi.disconnect(true);
+
+  delay(1000);
+  debugln("OK. Reconnecting...");
+
   WiFi.begin(ssid, password);
   #endif
 
@@ -222,6 +220,7 @@ void setData() {
     debugln(switchState);
   }
   sendStatus();
+  updateDisplay = true;
 }
 #endif
 
@@ -236,9 +235,9 @@ void loop() {
 
   // Update screen to show the current buffer
   display.display();
-  display.clearDisplay(); // start new buffer
 
   if(SCREENSAVER && screensaverOn) {
+    display.clearDisplay(); // start new buffer
     screensaverRender();
   } else {
     renderUI();
@@ -333,32 +332,72 @@ void draw_desired_temp(float temp) {
 }
 
 void drawWifiIcon() {
+  int strength;
   // render a wifi icon, either connected or not
+  if(enableServer) {
+    float raw = getSignalStrength();
+    strength = (int) (2 * (100 + raw));
+    strength = constrain(strength, 0, 100);
+    debug("Raw Signal Strength: "); debug(raw); debugln("dbm");
+  } else {
+    strength = 0;
+  }
+  
+  int index = ceil(strength / 25);
+  debug("Signal Strength: "); debug(strength); debugln("%");
+  debug("Icon index: "); debugln(index);
+  int x = 128 - wifi_width;
+  int y = 0;
+  display.fillRect(x, y, wifi_width, wifi_height, BLACK);
+  display.drawXBitmap(x, y, wifi_icon[index], wifi_width, wifi_height, WHITE);
 }
 
 void renderUI() {
-  // text display tests
-  display.setTextColor(WHITE);
-  float temp = getTemperature();
-  int tempInt = (int)temp;
-  int tempDec = (int) (temp * 10) - tempInt * 10;
-  draw_temp(temp, tempInt, tempDec);
+  static uint32_t lastUpdate = 0;
+  uint32_t t = millis();
+  //if (updateDisplay || t - lastUpdate > 5000L) {
+  if (t - lastUpdate > 5000L) {
+    debugln("UPDATE");
+    display.clearDisplay(); // start new buffer
+    // text display tests
+    display.setTextColor(WHITE);
+    float temp = getTemperature();
+    int tempInt = (int)temp;
+    int tempDec = (int) (temp * 10) - tempInt * 10;
+    draw_temp(temp, tempInt, tempDec);
+  
+    draw_desired_temp(desiredTemperature);
+  
+    #if defined(ESP8266)
+    drawWifiIcon();
+    #endif
+    updateDisplay = false;
+    lastUpdate = t;
+  }
+}
 
-  draw_desired_temp(desiredTemperature);
-
-  #if defined(ESP8266)
-  drawWifiIcon();
-  #endif
+float getSignalStrength() {
+  return WiFi.RSSI();
 }
 
 float getTemperature() {
   uint32_t t = millis();
-  if(tempLastReadTime == 0 || (t - tempLastReadTime) >= 60000L) { // Read temp once every 1 min
-    sensors.requestTemperatures();
-    temperature = sensors.getTempCByIndex(0);
+  if(tempLastReadTime == 0 || (t - tempLastReadTime) >= 5000L) { // Read temp once every 1 min
+    //sensors.requestTemperatures();
+    //temperature = sensors.getTempCByIndex(0);
+    temperature = random(20,30);
+    #if CAYENNE
+    Cayenne.celsiusWrite(TEMPERATURE_VPIN, temperature);
+    #endif
+
     tempLastReadTime = t;
   }
   return temperature;
+}
+
+void touch() {
+  idleStartTime = millis();
+  updateDisplay = true;
 }
 
 void turnScreensaver(boolean status) {
@@ -367,13 +406,13 @@ void turnScreensaver(boolean status) {
 
 void switchPressed() {// handle pin change interrupt for D8 to D13 here
   int button = digitalRead(SWITCH);
-  if(button) {
+  if(button == LOW) {
     if(screensaverOn) {
       turnScreensaver(OFF);
     } else {
       switchState = !switchState;
     }
-    idleStartTime = millis();
+    touch();
   }
 }
 
@@ -391,17 +430,13 @@ void rotaryChanged() {
         desiredTemperature = temperatureHigherLimit;
       }
     }
-    idleStartTime = millis();
+    touch();
   }
 }
 
 #if CAYENNE
-CAYENNE_OUT(TEMPERATURE_VPIN) {
-  Cayenne.celsiusWrite(TEMPERATURE_VPIN, getTemperature());
-}
-
 CAYENNE_OUT(DESIRED_TEMPERATURE_VPIN) {
-  Cayenne.celsiusWrite(DESIRED_TEMPERATURE_VPIN, desiredTemperature);
+  Cayenne.celsiusWrite(DESIRED_TEMPERATURE_VPIN, 21.0);
 }
 
 CAYENNE_OUT(SWITCH_VPIN) {
@@ -443,7 +478,7 @@ void screensaverSetup(){
     flyer[i].frame = random(3) ? random(4) : 255; // 66% toaster, else toast
     flyer[i].depth = 10 + random(16);             // Speed / stacking order
   }
-  //qsort(flyer, N_FLYERS, sizeof(struct Flyer), compare); // Sort depths
+  sort_flyers(flyer, N_FLYERS);
 }
 
 void screensaverRender() {
