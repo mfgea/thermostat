@@ -355,8 +355,7 @@ void drawWifiIcon() {
 void renderUI() {
   static uint32_t lastUpdate = 0;
   uint32_t t = millis();
-  //if (updateDisplay || t - lastUpdate > 5000L) {
-  if (t - lastUpdate > 5000L) {
+  if (updateDisplay || t - lastUpdate > 5000L) {
     debugln("UPDATE");
     display.clearDisplay(); // start new buffer
     // text display tests
@@ -365,9 +364,9 @@ void renderUI() {
     int tempInt = (int)temp;
     int tempDec = (int) (temp * 10) - tempInt * 10;
     draw_temp(temp, tempInt, tempDec);
-  
+
     draw_desired_temp(desiredTemperature);
-  
+
     #if defined(ESP8266)
     drawWifiIcon();
     #endif
