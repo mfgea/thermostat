@@ -2,7 +2,7 @@
 #include <DallasTemperature.h>
 #include <rotary.h>
 
-#include "thermostat.h"
+#include "config.h"
 #include "display.h"
 #include "values.h"
 
